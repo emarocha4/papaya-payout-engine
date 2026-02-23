@@ -41,7 +41,7 @@ func NewServer() (*Server, error) {
 		Health:   handlers.NewHealthHandler(healthService),
 		Merchant: handlers.NewMerchantHandler(merchantService),
 		Risk:     handlers.NewRiskHandler(riskService),
-		Batch:    handlers.NewBatchHandler(riskService),
+		Batch:    handlers.NewBatchHandler(riskService, merchantStore),
 	}
 
 	e := echo.New()

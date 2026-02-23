@@ -84,6 +84,7 @@ type FactorScore struct {
 	Velocity       int
 	Category       int
 	KYC            int
+	Refund         int
 }
 
 type BatchReport struct {

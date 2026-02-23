@@ -98,6 +98,19 @@ func (e *Evaluator) CalculateKYCScore(m *merchant.Merchant) int {
 	}
 }
 
+func (e *Evaluator) CalculateRefundScore(m *merchant.Merchant) int {
+	rate := m.RefundRate.InexactFloat64()
+
+	switch {
+	case rate < 3.0:
+		return 0
+	case rate >= 3.0 && rate < 6.0:
+		return 3
+	default:
+		return 5
+	}
+}
+
 func (e *Evaluator) CalculateTotalScore(m *merchant.Merchant) (int, FactorScore) {
 	factors := FactorScore{
 		Chargeback: e.CalculateChargebackScore(m),
@@ -105,10 +118,11 @@ func (e *Evaluator) CalculateTotalScore(m *merchant.Merchant) (int, FactorScore)
 		Velocity:   e.CalculateVelocityScore(m),
 		Category:   e.CalculateCategoryScore(m),
 		KYC:        e.CalculateKYCScore(m),
+		Refund:     e.CalculateRefundScore(m),
 	}
 
 	total := factors.Chargeback + factors.AccountAge + factors.Velocity +
-		factors.Category + factors.KYC
+		factors.Category + factors.KYC + factors.Refund
 
 	if total > 100 {
 		total = 100
