@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"sync"
 
@@ -10,16 +11,25 @@ import (
 )
 
 type BatchHandler struct {
-	riskService *risk.Service
+	riskService   *risk.Service
+	merchantStore risk.MerchantRepository
 }
 
-func NewBatchHandler(riskService *risk.Service) *BatchHandler {
-	return &BatchHandler{riskService: riskService}
+func NewBatchHandler(riskService *risk.Service, merchantStore risk.MerchantRepository) *BatchHandler {
+	return &BatchHandler{
+		riskService:   riskService,
+		merchantStore: merchantStore,
+	}
 }
 
 type BatchEvaluateRequest struct {
 	MerchantIDs []string `json:"merchant_ids"`
 	Simulation  bool     `json:"simulation"`
+}
+
+type EvaluationError struct {
+	MerchantID string `json:"merchant_id"`
+	Error      string `json:"error"`
 }
 
 func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
@@ -30,6 +40,7 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 
 	batchID := uuid.New()
 	decisions := make([]*risk.RiskDecision, 0, len(req.MerchantIDs))
+	failedEvaluations := make([]EvaluationError, 0)
 	var mu sync.Mutex
 
 	workers := 10
@@ -45,11 +56,23 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 
 			merchantID, err := uuid.Parse(merchantIDStr)
 			if err != nil {
+				mu.Lock()
+				failedEvaluations = append(failedEvaluations, EvaluationError{
+					MerchantID: merchantIDStr,
+					Error:      "invalid UUID format",
+				})
+				mu.Unlock()
 				return
 			}
 
 			decision, err := h.riskService.EvaluateMerchant(c.Request().Context(), merchantID, req.Simulation)
 			if err != nil {
+				mu.Lock()
+				failedEvaluations = append(failedEvaluations, EvaluationError{
+					MerchantID: merchantIDStr,
+					Error:      err.Error(),
+				})
+				mu.Unlock()
 				return
 			}
 
@@ -63,25 +86,42 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 
 	wg.Wait()
 
-	summary := h.generateSummary(decisions)
+	if len(decisions) == 0 {
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"batch_id":        batchID,
+			"total_merchants": len(req.MerchantIDs),
+			"successful":      0,
+			"failed":          len(failedEvaluations),
+			"errors":          failedEvaluations,
+			"message":         "no merchants could be evaluated successfully",
+			"simulation":      req.Simulation,
+		})
+	}
+
+	summary := h.generateSummary(c.Request().Context(), decisions)
 	highRiskMerchants := h.identifyHighRiskMerchants(decisions)
 
 	response := map[string]interface{}{
 		"batch_id":            batchID,
-		"total_merchants":     len(decisions),
+		"total_merchants":     len(req.MerchantIDs),
+		"successful":          len(decisions),
+		"failed":              len(failedEvaluations),
 		"evaluated_at":        decisions[0].EvaluatedAt,
 		"summary":             summary,
 		"high_risk_merchants": highRiskMerchants,
+		"errors":              failedEvaluations,
 		"simulation":          req.Simulation,
 	}
 
 	return c.JSON(http.StatusOK, response)
 }
 
-func (h *BatchHandler) generateSummary(decisions []*risk.RiskDecision) map[string]interface{} {
+func (h *BatchHandler) generateSummary(ctx context.Context, decisions []*risk.RiskDecision) map[string]interface{} {
 	byHoldPeriod := make(map[string]int)
 	byReserve := make(map[string]int)
 	byRiskLevel := make(map[string]int)
+	volumeByTier := make(map[string]float64)
+	totalVolume := 0.0
 
 	for _, d := range decisions {
 		byHoldPeriod[string(d.PayoutHoldPeriod)]++
@@ -93,12 +133,21 @@ func (h *BatchHandler) generateSummary(decisions []*risk.RiskDecision) map[strin
 		}
 		byReserve[reserveKey]++
 		byRiskLevel[string(d.RiskLevel)]++
+
+		merchant, err := h.merchantStore.Get(ctx, d.MerchantID)
+		if err == nil {
+			vol := merchant.TransactionVolume30d.InexactFloat64()
+			totalVolume += vol
+			volumeByTier[string(d.PayoutHoldPeriod)] += vol
+		}
 	}
 
 	return map[string]interface{}{
 		"by_hold_period": byHoldPeriod,
 		"by_reserve":     byReserve,
 		"by_risk_level":  byRiskLevel,
+		"total_volume":   totalVolume,
+		"volume_by_tier": volumeByTier,
 	}
 }
 
