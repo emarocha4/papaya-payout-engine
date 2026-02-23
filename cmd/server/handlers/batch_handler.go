@@ -2,11 +2,15 @@ package handlers
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/yuno-payments/papaya-payout-engine/internal/platform/constants"
 	"github.com/yuno-payments/papaya-payout-engine/internal/risk"
 )
 
@@ -38,12 +42,29 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
+	if len(req.MerchantIDs) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "merchant_ids cannot be empty"})
+	}
+
+	if len(req.MerchantIDs) > constants.MaxBatchSize {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("batch size exceeds maximum of %d merchants", constants.MaxBatchSize),
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request().Context(), constants.BatchTimeout)
+	defer cancel()
+
 	batchID := uuid.New()
+	log.Printf("[INFO] Starting batch evaluation %s: %d merchants (simulation=%v)",
+		batchID, len(req.MerchantIDs), req.Simulation)
+	startTime := time.Now()
+
 	decisions := make([]*risk.RiskDecision, 0, len(req.MerchantIDs))
 	failedEvaluations := make([]EvaluationError, 0)
 	var mu sync.Mutex
 
-	workers := 10
+	workers := constants.DefaultWorkers
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 
@@ -65,7 +86,7 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 				return
 			}
 
-			decision, err := h.riskService.EvaluateMerchant(c.Request().Context(), merchantID, req.Simulation)
+			decision, err := h.riskService.EvaluateMerchant(ctx, merchantID, req.Simulation)
 			if err != nil {
 				mu.Lock()
 				failedEvaluations = append(failedEvaluations, EvaluationError{
@@ -86,7 +107,12 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 
 	wg.Wait()
 
+	duration := time.Since(startTime)
+	log.Printf("[INFO] Batch %s completed in %v: %d successful, %d failed",
+		batchID, duration, len(decisions), len(failedEvaluations))
+
 	if len(decisions) == 0 {
+		log.Printf("[WARN] Batch %s: all evaluations failed", batchID)
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"batch_id":        batchID,
 			"total_merchants": len(req.MerchantIDs),
@@ -100,6 +126,11 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 
 	summary := h.generateSummary(c.Request().Context(), decisions)
 	highRiskMerchants := h.identifyHighRiskMerchants(decisions)
+
+	if len(highRiskMerchants) > 0 {
+		log.Printf("[WARN] Batch %s: %d high-risk merchants detected",
+			batchID, len(highRiskMerchants))
+	}
 
 	response := map[string]interface{}{
 		"batch_id":            batchID,

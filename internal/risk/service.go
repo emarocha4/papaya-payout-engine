@@ -3,6 +3,7 @@ package risk
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,10 +42,29 @@ func NewService(
 	}
 }
 
+// EvaluateMerchant performs a comprehensive risk assessment of a merchant and
+// determines appropriate payout policies (hold period and reserve percentage).
+//
+// The evaluation considers 6 risk factors:
+//   - Chargeback rate (30 points max) - Most critical indicator
+//   - Account age (25 points max) - Establ ished track record
+//   - Transaction velocity (20 points max) - Sudden spikes detection
+//   - Business category (15 points max) - Industry risk levels
+//   - KYC verification (10 points max) - Identity verification
+//   - Refund rate (5 points max) - Fraud signal indicator
+//
+// If simulation is false, the decision is persisted to the database.
+// If simulation is true, the decision is returned but not saved (useful for testing).
+//
+// Returns a RiskDecision containing the risk score (0-100), assigned tier,
+// policy parameters, and detailed reasoning for the decision.
 func (s *Service) EvaluateMerchant(ctx context.Context, merchantID uuid.UUID, simulation bool) (*RiskDecision, error) {
+	log.Printf("[INFO] Evaluating merchant %s (simulation=%v)", merchantID, simulation)
+
 	m, err := s.merchantStore.Get(ctx, merchantID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get merchant: %w", err)
+		log.Printf("[ERROR] Failed to get merchant %s: %v", merchantID, err)
+		return nil, fmt.Errorf("failed to get merchant %s: %w", merchantID, err)
 	}
 
 	totalScore, factors := s.evaluator.CalculateTotalScore(m)
@@ -62,25 +82,70 @@ func (s *Service) EvaluateMerchant(ctx context.Context, merchantID uuid.UUID, si
 		Simulation:               simulation,
 	}
 
+	if totalScore >= 60 {
+		log.Printf("[WARN] High risk score detected for merchant %s: score=%d, level=%s",
+			merchantID, totalScore, tier.RiskLevel)
+	} else {
+		log.Printf("[INFO] Merchant %s evaluated: score=%d, level=%s, hold=%s",
+			merchantID, totalScore, tier.RiskLevel, tier.HoldPeriod)
+	}
+
 	if !simulation {
 		if err := s.decisionStore.Create(ctx, decision); err != nil {
-			return nil, fmt.Errorf("failed to save decision: %w", err)
+			log.Printf("[ERROR] Failed to save decision for merchant %s: %v", merchantID, err)
+			return nil, fmt.Errorf("failed to save decision for merchant %s: %w", merchantID, err)
 		}
+		log.Printf("[INFO] Decision saved for merchant %s", merchantID)
 	}
 
 	return decision, nil
 }
 
+// SimulateMerchant performs a "what-if" risk evaluation with modified merchant data
+// or custom scoring thresholds. The actual merchant record is not modified.
+//
+// Supported merchant data overrides:
+//   - chargeback_rate (float64)
+//   - account_age_days (float64)
+//   - kyc_verified (bool)
+//   - velocity_multiplier (float64)
+//
+// Supported scoring threshold overrides (in scoring_thresholds map):
+//   - chargeback_excellent (float64)
+//   - chargeback_acceptable (float64)
+//   - chargeback_critical (float64)
+//   - velocity_normal (float64)
+//   - refund_normal (float64)
+//   - refund_elevated (float64)
+//
+// Example: Test impact of stricter chargeback thresholds:
+//   overrides := map[string]interface{}{
+//       "scoring_thresholds": map[string]interface{}{
+//           "chargeback_excellent": 0.3,  // Lower from 0.5%
+//           "chargeback_critical": 1.0,   // Lower from 1.5%
+//       },
+//   }
+//
+// The simulation result is never persisted to the database.
 func (s *Service) SimulateMerchant(ctx context.Context, merchantID uuid.UUID, overrides map[string]interface{}) (*RiskDecision, error) {
+	log.Printf("[INFO] Simulating merchant %s with %d overrides", merchantID, len(overrides))
+
 	m, err := s.merchantStore.Get(ctx, merchantID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get merchant: %w", err)
+		log.Printf("[ERROR] Failed to get merchant %s for simulation: %v", merchantID, err)
+		return nil, fmt.Errorf("failed to get merchant %s: %w", merchantID, err)
 	}
 
 	simulatedMerchant := *m
 	s.applyOverrides(&simulatedMerchant, overrides)
 
-	totalScore, factors := s.evaluator.CalculateTotalScore(&simulatedMerchant)
+	evaluator := s.evaluator
+	if thresholds, ok := overrides["scoring_thresholds"].(map[string]interface{}); ok {
+		log.Printf("[INFO] Using custom scoring thresholds for simulation")
+		evaluator = NewEvaluatorWithThresholds(thresholds)
+	}
+
+	totalScore, factors := evaluator.CalculateTotalScore(&simulatedMerchant)
 	tier := s.policy.DeterminePolicyTier(totalScore)
 	reasoning := s.explainer.GenerateReasoning(&simulatedMerchant, factors, tier)
 
@@ -94,6 +159,9 @@ func (s *Service) SimulateMerchant(ctx context.Context, merchantID uuid.UUID, ov
 		EvaluatedAt:              time.Now(),
 		Simulation:               true,
 	}
+
+	log.Printf("[INFO] Simulation complete for merchant %s: score=%d (original would be different)",
+		merchantID, totalScore)
 
 	return decision, nil
 }
