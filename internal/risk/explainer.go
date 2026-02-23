@@ -19,10 +19,11 @@ func (e *Explainer) GenerateReasoning(m *merchant.Merchant, factors FactorScore,
 		e.ExplainVelocityScore(factors.Velocity, m.VelocityMultiplier.InexactFloat64()),
 		e.ExplainCategoryScore(factors.Category, m.Industry),
 		e.ExplainKYCScore(factors.KYC, m.KYCVerified, m.KYCLevel),
+		e.ExplainRefundScore(factors.Refund, m.RefundRate.InexactFloat64()),
 	}
 
 	totalScore := factors.Chargeback + factors.AccountAge + factors.Velocity +
-		factors.Category + factors.KYC
+		factors.Category + factors.KYC + factors.Refund
 
 	policyExplanation := fmt.Sprintf(
 		"Score of %d places merchant in %s tier requiring %s hold and %d%% reserve",
@@ -181,6 +182,30 @@ func (e *Explainer) ExplainKYCScore(score int, verified bool, level string) Fact
 
 	return FactorExplanation{
 		Factor:       "KYC Verification",
+		Score:        score,
+		Contribution: contribution,
+		Impact:       impact,
+	}
+}
+
+func (e *Explainer) ExplainRefundScore(score int, rate float64) FactorExplanation {
+	var contribution string
+	var impact string
+
+	switch {
+	case rate < 3.0:
+		contribution = fmt.Sprintf("%.1f%% refund rate - Normal", rate)
+		impact = "POSITIVE"
+	case rate >= 3.0 && rate < 6.0:
+		contribution = fmt.Sprintf("%.1f%% refund rate - Elevated", rate)
+		impact = "NEUTRAL"
+	default:
+		contribution = fmt.Sprintf("%.1f%% refund rate - High (fraud signal)", rate)
+		impact = "NEGATIVE"
+	}
+
+	return FactorExplanation{
+		Factor:       "Refund Rate",
 		Score:        score,
 		Contribution: contribution,
 		Impact:       impact,
