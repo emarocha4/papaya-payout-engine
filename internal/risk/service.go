@@ -3,6 +3,7 @@ package risk
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,9 +43,12 @@ func NewService(
 }
 
 func (s *Service) EvaluateMerchant(ctx context.Context, merchantID uuid.UUID, simulation bool) (*RiskDecision, error) {
+	log.Printf("[INFO] Evaluating merchant %s (simulation=%v)", merchantID, simulation)
+
 	m, err := s.merchantStore.Get(ctx, merchantID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get merchant: %w", err)
+		log.Printf("[ERROR] Failed to get merchant %s: %v", merchantID, err)
+		return nil, fmt.Errorf("failed to get merchant %s: %w", merchantID, err)
 	}
 
 	totalScore, factors := s.evaluator.CalculateTotalScore(m)
@@ -62,19 +66,32 @@ func (s *Service) EvaluateMerchant(ctx context.Context, merchantID uuid.UUID, si
 		Simulation:               simulation,
 	}
 
+	if totalScore >= 60 {
+		log.Printf("[WARN] High risk score detected for merchant %s: score=%d, level=%s",
+			merchantID, totalScore, tier.RiskLevel)
+	} else {
+		log.Printf("[INFO] Merchant %s evaluated: score=%d, level=%s, hold=%s",
+			merchantID, totalScore, tier.RiskLevel, tier.HoldPeriod)
+	}
+
 	if !simulation {
 		if err := s.decisionStore.Create(ctx, decision); err != nil {
-			return nil, fmt.Errorf("failed to save decision: %w", err)
+			log.Printf("[ERROR] Failed to save decision for merchant %s: %v", merchantID, err)
+			return nil, fmt.Errorf("failed to save decision for merchant %s: %w", merchantID, err)
 		}
+		log.Printf("[INFO] Decision saved for merchant %s", merchantID)
 	}
 
 	return decision, nil
 }
 
 func (s *Service) SimulateMerchant(ctx context.Context, merchantID uuid.UUID, overrides map[string]interface{}) (*RiskDecision, error) {
+	log.Printf("[INFO] Simulating merchant %s with %d overrides", merchantID, len(overrides))
+
 	m, err := s.merchantStore.Get(ctx, merchantID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get merchant: %w", err)
+		log.Printf("[ERROR] Failed to get merchant %s for simulation: %v", merchantID, err)
+		return nil, fmt.Errorf("failed to get merchant %s: %w", merchantID, err)
 	}
 
 	simulatedMerchant := *m
@@ -82,6 +99,7 @@ func (s *Service) SimulateMerchant(ctx context.Context, merchantID uuid.UUID, ov
 
 	evaluator := s.evaluator
 	if thresholds, ok := overrides["scoring_thresholds"].(map[string]interface{}); ok {
+		log.Printf("[INFO] Using custom scoring thresholds for simulation")
 		evaluator = NewEvaluatorWithThresholds(thresholds)
 	}
 
@@ -99,6 +117,9 @@ func (s *Service) SimulateMerchant(ctx context.Context, merchantID uuid.UUID, ov
 		EvaluatedAt:              time.Now(),
 		Simulation:               true,
 	}
+
+	log.Printf("[INFO] Simulation complete for merchant %s: score=%d (original would be different)",
+		merchantID, totalScore)
 
 	return decision, nil
 }

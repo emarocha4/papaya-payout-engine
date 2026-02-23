@@ -3,8 +3,10 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
@@ -54,6 +56,10 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 	defer cancel()
 
 	batchID := uuid.New()
+	log.Printf("[INFO] Starting batch evaluation %s: %d merchants (simulation=%v)",
+		batchID, len(req.MerchantIDs), req.Simulation)
+	startTime := time.Now()
+
 	decisions := make([]*risk.RiskDecision, 0, len(req.MerchantIDs))
 	failedEvaluations := make([]EvaluationError, 0)
 	var mu sync.Mutex
@@ -101,7 +107,12 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 
 	wg.Wait()
 
+	duration := time.Since(startTime)
+	log.Printf("[INFO] Batch %s completed in %v: %d successful, %d failed",
+		batchID, duration, len(decisions), len(failedEvaluations))
+
 	if len(decisions) == 0 {
+		log.Printf("[WARN] Batch %s: all evaluations failed", batchID)
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"batch_id":        batchID,
 			"total_merchants": len(req.MerchantIDs),
@@ -115,6 +126,11 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 
 	summary := h.generateSummary(c.Request().Context(), decisions)
 	highRiskMerchants := h.identifyHighRiskMerchants(decisions)
+
+	if len(highRiskMerchants) > 0 {
+		log.Printf("[WARN] Batch %s: %d high-risk merchants detected",
+			batchID, len(highRiskMerchants))
+	}
 
 	response := map[string]interface{}{
 		"batch_id":            batchID,
