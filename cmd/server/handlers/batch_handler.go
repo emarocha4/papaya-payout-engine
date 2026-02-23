@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/yuno-payments/papaya-payout-engine/internal/platform/constants"
 	"github.com/yuno-payments/papaya-payout-engine/internal/risk"
 )
 
@@ -38,12 +40,25 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
+	if len(req.MerchantIDs) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "merchant_ids cannot be empty"})
+	}
+
+	if len(req.MerchantIDs) > constants.MaxBatchSize {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("batch size exceeds maximum of %d merchants", constants.MaxBatchSize),
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request().Context(), constants.BatchTimeout)
+	defer cancel()
+
 	batchID := uuid.New()
 	decisions := make([]*risk.RiskDecision, 0, len(req.MerchantIDs))
 	failedEvaluations := make([]EvaluationError, 0)
 	var mu sync.Mutex
 
-	workers := 10
+	workers := constants.DefaultWorkers
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 
@@ -65,7 +80,7 @@ func (h *BatchHandler) BatchEvaluate(c echo.Context) error {
 				return
 			}
 
-			decision, err := h.riskService.EvaluateMerchant(c.Request().Context(), merchantID, req.Simulation)
+			decision, err := h.riskService.EvaluateMerchant(ctx, merchantID, req.Simulation)
 			if err != nil {
 				mu.Lock()
 				failedEvaluations = append(failedEvaluations, EvaluationError{

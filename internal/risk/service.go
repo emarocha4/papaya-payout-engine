@@ -80,7 +80,12 @@ func (s *Service) SimulateMerchant(ctx context.Context, merchantID uuid.UUID, ov
 	simulatedMerchant := *m
 	s.applyOverrides(&simulatedMerchant, overrides)
 
-	totalScore, factors := s.evaluator.CalculateTotalScore(&simulatedMerchant)
+	evaluator := s.evaluator
+	if thresholds, ok := overrides["scoring_thresholds"].(map[string]interface{}); ok {
+		evaluator = NewEvaluatorWithThresholds(thresholds)
+	}
+
+	totalScore, factors := evaluator.CalculateTotalScore(&simulatedMerchant)
 	tier := s.policy.DeterminePolicyTier(totalScore)
 	reasoning := s.explainer.GenerateReasoning(&simulatedMerchant, factors, tier)
 
