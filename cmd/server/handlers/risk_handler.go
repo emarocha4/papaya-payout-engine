@@ -1,18 +1,26 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+	"github.com/yuno-payments/papaya-payout-engine/internal/merchant"
 	"github.com/yuno-payments/papaya-payout-engine/internal/risk"
 )
 
-type RiskHandler struct {
-	riskService *risk.Service
+type RiskService interface {
+	EvaluateMerchant(ctx context.Context, merchantID uuid.UUID, simulation bool) (*risk.RiskDecision, error)
+	SimulateMerchant(ctx context.Context, merchantID uuid.UUID, overrides map[string]interface{}) (*risk.RiskDecision, error)
+	GetMerchantProfile(ctx context.Context, merchantID uuid.UUID) (*merchant.MerchantProfile, error)
 }
 
-func NewRiskHandler(riskService *risk.Service) *RiskHandler {
+type RiskHandler struct {
+	riskService RiskService
+}
+
+func NewRiskHandler(riskService RiskService) *RiskHandler {
 	return &RiskHandler{riskService: riskService}
 }
 
