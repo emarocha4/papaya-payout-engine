@@ -42,6 +42,22 @@ func NewService(
 	}
 }
 
+// EvaluateMerchant performs a comprehensive risk assessment of a merchant and
+// determines appropriate payout policies (hold period and reserve percentage).
+//
+// The evaluation considers 6 risk factors:
+//   - Chargeback rate (30 points max) - Most critical indicator
+//   - Account age (25 points max) - Establ ished track record
+//   - Transaction velocity (20 points max) - Sudden spikes detection
+//   - Business category (15 points max) - Industry risk levels
+//   - KYC verification (10 points max) - Identity verification
+//   - Refund rate (5 points max) - Fraud signal indicator
+//
+// If simulation is false, the decision is persisted to the database.
+// If simulation is true, the decision is returned but not saved (useful for testing).
+//
+// Returns a RiskDecision containing the risk score (0-100), assigned tier,
+// policy parameters, and detailed reasoning for the decision.
 func (s *Service) EvaluateMerchant(ctx context.Context, merchantID uuid.UUID, simulation bool) (*RiskDecision, error) {
 	log.Printf("[INFO] Evaluating merchant %s (simulation=%v)", merchantID, simulation)
 
@@ -85,6 +101,32 @@ func (s *Service) EvaluateMerchant(ctx context.Context, merchantID uuid.UUID, si
 	return decision, nil
 }
 
+// SimulateMerchant performs a "what-if" risk evaluation with modified merchant data
+// or custom scoring thresholds. The actual merchant record is not modified.
+//
+// Supported merchant data overrides:
+//   - chargeback_rate (float64)
+//   - account_age_days (float64)
+//   - kyc_verified (bool)
+//   - velocity_multiplier (float64)
+//
+// Supported scoring threshold overrides (in scoring_thresholds map):
+//   - chargeback_excellent (float64)
+//   - chargeback_acceptable (float64)
+//   - chargeback_critical (float64)
+//   - velocity_normal (float64)
+//   - refund_normal (float64)
+//   - refund_elevated (float64)
+//
+// Example: Test impact of stricter chargeback thresholds:
+//   overrides := map[string]interface{}{
+//       "scoring_thresholds": map[string]interface{}{
+//           "chargeback_excellent": 0.3,  // Lower from 0.5%
+//           "chargeback_critical": 1.0,   // Lower from 1.5%
+//       },
+//   }
+//
+// The simulation result is never persisted to the database.
 func (s *Service) SimulateMerchant(ctx context.Context, merchantID uuid.UUID, overrides map[string]interface{}) (*RiskDecision, error) {
 	log.Printf("[INFO] Simulating merchant %s with %d overrides", merchantID, len(overrides))
 
