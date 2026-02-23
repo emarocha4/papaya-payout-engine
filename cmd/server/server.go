@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -59,4 +60,23 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%s", s.config.Port)
 	log.Printf("Starting server on %s", addr)
 	return s.echo.Start(addr)
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	log.Println("Shutting down HTTP server...")
+	if err := s.echo.Shutdown(ctx); err != nil {
+		return fmt.Errorf("failed to shutdown server: %w", err)
+	}
+
+	log.Println("Closing database connections...")
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+
+	if err := sqlDB.Close(); err != nil {
+		return fmt.Errorf("failed to close database: %w", err)
+	}
+
+	return nil
 }
